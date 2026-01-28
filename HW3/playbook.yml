@@ -1,0 +1,59 @@
+---
+- name: Set up nginx and manage service state
+  hosts: localhost
+  become: yes
+  tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - cron
+          - jq
+        state: present
+
+    - name: Copy nginx configuration
+      copy:
+        src: nginx.conf
+        dest: /etc/nginx/sites-available/default
+      notify: restart nginx
+
+    - name: Check current title in /opt/service_state.json
+      command: jq -r '.title' /opt/service_state.json
+      register: current_title
+      ignore_errors: yes
+
+    - name: Check expected title in the source file
+      command: jq -r '.title' service_state.json
+      register: expected_title
+
+    - name: Copy service_state.json if title has changed
+      copy:
+        src: service_state.json
+        dest: /opt/service_state.json
+      notify: restart nginx
+      when: current_title.stdout != expected_title.stdout
+
+    - name: Schedule uptime update in cron
+      cron:
+        name: "Update uptime every minute"
+        minute: "*"
+        job: echo "$(jq ".uptime = $(($(ps -o etimes= -p $(cat /var/run/nginx.pid)) / 60))" /opt/service_state.json)" > /opt/service_state.json
+
+    - name: Ensure nginx is started and enabled
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Check uptime in service_state.json
+      command: jq '.uptime' /opt/service_state.json
+      register: uptime
+      until: uptime.stdout | int > 0
+      retries: 5
+      delay: 30
+
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
